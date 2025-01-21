@@ -109,7 +109,18 @@ const commands = [
     .setDescription(
       "🔕 Toggle whether the bot notifies you about earned points",
     ),
-
+  new SlashCommandBuilder()
+    .setName("connectwallet")
+    .setDescription("Link your SOL wallet for 10 points")
+    .addStringOption((opt) =>
+      opt
+        .setName("wallet_address")
+        .setDescription("Your SOL wallet address")
+        .setRequired(true),
+    ),
+  new SlashCommandBuilder()
+    .setName("fetchtwitter")
+    .setDescription("Manually fetch recent tweets (admin only)"),
   // ------------------ 12) ADMINHELP ------------------
   new SlashCommandBuilder()
     .setName("adminhelp")
