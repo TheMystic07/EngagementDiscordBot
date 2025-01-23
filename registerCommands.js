@@ -121,6 +121,30 @@ const commands = [
   new SlashCommandBuilder()
     .setName("fetchtwitter")
     .setDescription("Manually fetch recent tweets (admin only)"),
+  new SlashCommandBuilder()
+    .setName("addpoints")
+    .setDescription(
+      "Add points to a single user or all users with a specific role (admin only)",
+    )
+    .addIntegerOption((opt) =>
+      opt
+        .setName("points")
+        .setDescription("How many points to add")
+        .setRequired(true),
+    )
+    .addUserOption((opt) =>
+      opt
+        .setName("user")
+        .setDescription("The user to whom points will be added")
+        .setRequired(false),
+    )
+    .addRoleOption((opt) =>
+      opt
+        .setName("role")
+        .setDescription("All members in this role will get points")
+        .setRequired(false),
+    ),
+
   // ------------------ 12) ADMINHELP ------------------
   new SlashCommandBuilder()
     .setName("adminhelp")

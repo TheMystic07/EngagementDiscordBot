@@ -300,6 +300,124 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
+  // Add Points
+  else if (commandName === "addpoints") {
+    if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      return interaction.reply({
+        content: "🚫 Only admins can use this command.",
+        ephemeral: true,
+      });
+    }
+
+    // 1. Parse options
+    const pointsToAdd = options.getInteger("points");
+    const targetUser = options.getUser("user"); // might be null if not provided
+    const targetRole = options.getRole("role"); // might be null if not provided
+
+    // Validate
+    if (!targetUser && !targetRole) {
+      return interaction.reply({
+        content: "❌ You must specify either a user or a role.",
+        ephemeral: true,
+      });
+    }
+    if (pointsToAdd <= 0) {
+      return interaction.reply({
+        content: "❌ Points must be greater than 0.",
+        ephemeral: true,
+      });
+    }
+
+    // 2. If a single user is specified:
+    if (targetUser && !targetRole) {
+      const userId = targetUser.id;
+      // Use the same awarding function
+      const result = await awardPoints(userId, pointsToAdd, "manual_addpoints");
+      // Optionally log an admin action
+      if (result && result.newPoints !== null) {
+        await logAdminAction(
+          interaction.user.id,
+          userId,
+          "addpoints_user",
+          pointsToAdd,
+        );
+        await interaction.reply({
+          content: `✅ Added **${pointsToAdd}** points to <@${userId}>.`,
+          ephemeral: true,
+        });
+      } else {
+        await interaction.reply({
+          content: `❌ Could not add points to <@${userId}> (not verified or error).`,
+          ephemeral: true,
+        });
+      }
+    }
+
+    // 3. If a role is specified (with or without a user):
+    else if (targetRole) {
+      // fetch the guild from interaction
+      const guild = interaction.guild;
+      if (!guild) {
+        return interaction.reply({
+          content: "❌ Could not fetch guild.",
+          ephemeral: true,
+        });
+      }
+
+      // fetch members of that role
+      let roleMembers;
+      try {
+        // Force a cache if not readily available:
+        await guild.members.fetch();
+        roleMembers = targetRole.members; // Collection of GuildMember
+      } catch (err) {
+        console.error("[addpoints] Error fetching role members:", err);
+        return interaction.reply({
+          content: `❌ Could not fetch members for role <@&${targetRole.id}>.`,
+          ephemeral: true,
+        });
+      }
+
+      if (!roleMembers || roleMembers.size === 0) {
+        return interaction.reply({
+          content: `No members found with role <@&${targetRole.id}>.`,
+          ephemeral: true,
+        });
+      }
+
+      let successCount = 0;
+      let failCount = 0;
+
+      // We'll do awarding in series to avoid spamming the DB
+      for (const [memberId, guildMember] of roleMembers) {
+        // skip bots
+        if (guildMember.user.bot) continue;
+
+        const result = await awardPoints(
+          memberId,
+          pointsToAdd,
+          "manual_addpoints_role",
+        );
+        if (result && result.newPoints !== null) {
+          successCount++;
+          // Optionally log each
+          await logAdminAction(
+            interaction.user.id,
+            memberId,
+            "addpoints_role",
+            pointsToAdd,
+          );
+        } else {
+          failCount++;
+        }
+      }
+
+      await interaction.reply({
+        content: `✅ **${successCount}** members updated, **${failCount}** failed or not verified, in role <@&${targetRole.id}>.`,
+        ephemeral: true,
+      });
+    }
+  }
   // ---- /leaderboard (public) ----
   else if (commandName === "leaderboard") {
     const { data, error } = await supabase
