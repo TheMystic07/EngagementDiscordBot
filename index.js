@@ -34,11 +34,9 @@ const OFFICIAL_TWITTER_ACCOUNT = process.env.TWITTER_ACCOUNT;
 /********************************************************************
  *         TRACKERS & IN-MEMORY CONFIG
  ********************************************************************/
-
-// For message points, we track how many messages each user has sent today,
-// how many points they've earned from messages so far today, etc.
+// For message-based points, track daily usage:
 const dailyMessageTracker = {};
-// Structure: dailyMessageTracker[discordId] = {
+// e.g. dailyMessageTracker[discordId] = {
 //   date: "YYYY-MM-DD",
 //   messagesSoFar: number,
 //   pointsEarnedToday: number
@@ -54,8 +52,8 @@ let BOT_LOG_CHANNEL = null;
 let TWEET_UPDATES_CHANNEL = null;
 
 /**
- * Scoring config from your new rules:
- *  - 1 point per 5 messages (max 20 points / day)
+ * Scoring config:
+ *  - 1 point per 5 messages (max 20 points/day)
  *  - Reactions: 2 points
  *  - Connect Wallet: 10 points
  *  - Like: 4 points
@@ -64,11 +62,9 @@ let TWEET_UPDATES_CHANNEL = null;
  *  - Reply: 8 points
  */
 const SCORE_CONFIG = {
-  // For messages, we do not directly store "1 point per 5" here,
-  // we’ll do the logic in code.
   messagesPerPoint: 5,
   messageMaxPointsPerDay: 20,
-
+  messageReward: 1, // how many points each time threshold is reached
   reactionPoints: 2,
   connectWalletPoints: 10,
 
@@ -81,9 +77,8 @@ const SCORE_CONFIG = {
 /********************************************************************
  *                      LOGGING HELPERS
  ********************************************************************/
-
 /**
- * Logs a message to console AND optionally to the configured bot log channel.
+ * Log to console + optionally a Discord bot-log channel.
  */
 async function botLog(msg) {
   console.log("[LOG]", msg);
@@ -101,11 +96,6 @@ async function botLog(msg) {
 /********************************************************************
  *             ACTIVITY LOGS & ADMIN LOGS (DB Insert)
  ********************************************************************/
-
-/**
- * Log normal user point awards to "activity_logs".
- * e.g. action = "message_points", "reaction_points", "twitter_like", ...
- */
 async function logActivity(discordId, action, points) {
   const { error } = await supabase.from("activity_logs").insert([
     {
@@ -125,11 +115,6 @@ async function logActivity(discordId, action, points) {
   }
 }
 
-/**
- * Log admin actions to "admin_logs".
- * e.g. action = "resetpoints", "editscores", ...
- * pointsChanged can be positive or negative.
- */
 async function logAdminAction(adminId, userId, action, pointsChanged = null) {
   const { error } = await supabase.from("admin_logs").insert([
     {
@@ -149,9 +134,8 @@ async function logAdminAction(adminId, userId, action, pointsChanged = null) {
 }
 
 /********************************************************************
- *      LOAD REACTION CHANNELS
+ *      LOAD REACTION CHANNELS (FROM DB)
  ********************************************************************/
-
 async function loadReactionChannels() {
   const { data, error } = await supabase
     .from("reaction_channels")
@@ -195,18 +179,17 @@ async function removeReactionChannel(channelId) {
 }
 
 /********************************************************************
- *                UPDATE POINTS & LOG ACTIVITY
+ *                UPDATE GOLD_POINTS & LOG ACTIVITY
  ********************************************************************/
-
 /**
- * A generic function to update user’s points if they’re verified,
- * log the action, and respect the user’s notification setting.
+ * Award points in the `gold_points` column if user is "verified" (has twitter_id).
+ * Logs the action in the activity_logs table if pointsToAdd != 0.
  */
 async function awardPoints(discordId, pointsToAdd, action) {
-  // 1. Fetch user
+  // 1. Fetch user row
   const { data: userData, error } = await supabase
     .from("users")
-    .select("points, twitter_id, notify_enabled")
+    .select("gold_points, twitter_id, notify_enabled")
     .eq("discord_id", discordId)
     .single();
 
@@ -214,17 +197,17 @@ async function awardPoints(discordId, pointsToAdd, action) {
     return { newPoints: null, notifyEnabled: true, verified: false };
   }
   if (!userData.twitter_id) {
-    // Not verified
+    // means user not "verified"
     return { newPoints: null, notifyEnabled: true, verified: false };
   }
 
-  // 2. Update points
-  const oldPoints = userData.points || 0;
+  // 2. Update gold_points
+  const oldPoints = userData.gold_points || 0;
   const newPoints = oldPoints + pointsToAdd;
 
   const { error: updateErr } = await supabase
     .from("users")
-    .update({ points: newPoints })
+    .update({ gold_points: newPoints })
     .eq("discord_id", discordId);
 
   if (updateErr) {
@@ -234,7 +217,7 @@ async function awardPoints(discordId, pointsToAdd, action) {
     return { newPoints: null, notifyEnabled: true, verified: true };
   }
 
-  // 3. Log
+  // 3. Log in activity_logs
   if (pointsToAdd !== 0) {
     await logActivity(discordId, action, pointsToAdd);
   }
@@ -256,6 +239,7 @@ client.on("interactionCreate", async (interaction) => {
   // ---- /verify ----
   if (commandName === "verify") {
     const twitterId = options.getString("twitter_id");
+    // Upsert row with discord_id + twitter_id
     const { error } = await supabase
       .from("users")
       .upsert([{ discord_id: user.id, twitter_id: twitterId }], {
@@ -274,33 +258,33 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
-  // ---- /mypoints ----
+  // ---- /mypoints => show current gold_points
   else if (commandName === "mypoints") {
     const { data, error } = await supabase
       .from("users")
-      .select("points")
+      .select("gold_points")
       .eq("discord_id", user.id)
       .single();
 
     if (error) {
       return interaction.reply({
-        content: "❌ Error fetching points.",
+        content: "❌ Error fetching your gold points.",
         ephemeral: true,
       });
     }
     if (!data) {
       return interaction.reply({
-        content: "😕 You have no points yet. /verify to start earning!",
+        content: "😕 You have no record yet. /verify to start earning points!",
         ephemeral: true,
       });
     }
     return interaction.reply({
-      content: `You have **${data.points}** points!`,
+      content: `You have **${data.gold_points}** gold points!`,
       ephemeral: true,
     });
   }
 
-  // Add Points
+  // ---- /addpoints => admin can add gold_points to user or role
   else if (commandName === "addpoints") {
     if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return interaction.reply({
@@ -309,12 +293,11 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    // 1. Parse options
     const pointsToAdd = options.getInteger("points");
-    const targetUser = options.getUser("user"); // might be null if not provided
-    const targetRole = options.getRole("role"); // might be null if not provided
+    const targetUser = options.getUser("user");
+    const targetRole = options.getRole("role");
 
-    // Validate
+    // Must specify either user or role
     if (!targetUser && !targetRole) {
       return interaction.reply({
         content: "❌ You must specify either a user or a role.",
@@ -323,39 +306,31 @@ client.on("interactionCreate", async (interaction) => {
     }
     if (pointsToAdd <= 0) {
       return interaction.reply({
-        content: "❌ Points must be greater than 0.",
+        content: "❌ Points must be > 0.",
         ephemeral: true,
       });
     }
 
-    // 2. If a single user is specified:
+    // Single user
     if (targetUser && !targetRole) {
       const userId = targetUser.id;
-      // Use the same awarding function
       const result = await awardPoints(userId, pointsToAdd, "manual_addpoints");
-      // Optionally log an admin action
       if (result && result.newPoints !== null) {
-        await logAdminAction(
-          interaction.user.id,
-          userId,
-          "addpoints_user",
-          pointsToAdd,
-        );
-        await interaction.reply({
-          content: `✅ Added **${pointsToAdd}** points to <@${userId}>.`,
+        await logAdminAction(user.id, userId, "addpoints_user", pointsToAdd);
+        return interaction.reply({
+          content: `✅ Added **${pointsToAdd}** gold points to <@${userId}>.`,
           ephemeral: true,
         });
       } else {
-        await interaction.reply({
+        return interaction.reply({
           content: `❌ Could not add points to <@${userId}> (not verified or error).`,
           ephemeral: true,
         });
       }
     }
 
-    // 3. If a role is specified (with or without a user):
+    // Role
     else if (targetRole) {
-      // fetch the guild from interaction
       const guild = interaction.guild;
       if (!guild) {
         return interaction.reply({
@@ -364,12 +339,11 @@ client.on("interactionCreate", async (interaction) => {
         });
       }
 
-      // fetch members of that role
       let roleMembers;
       try {
-        // Force a cache if not readily available:
+        // fetch all members to ensure we have them in cache
         await guild.members.fetch();
-        roleMembers = targetRole.members; // Collection of GuildMember
+        roleMembers = targetRole.members;
       } catch (err) {
         console.error("[addpoints] Error fetching role members:", err);
         return interaction.reply({
@@ -388,11 +362,8 @@ client.on("interactionCreate", async (interaction) => {
       let successCount = 0;
       let failCount = 0;
 
-      // We'll do awarding in series to avoid spamming the DB
       for (const [memberId, guildMember] of roleMembers) {
-        // skip bots
-        if (guildMember.user.bot) continue;
-
+        if (guildMember.user.bot) continue; // skip bots
         const result = await awardPoints(
           memberId,
           pointsToAdd,
@@ -400,9 +371,8 @@ client.on("interactionCreate", async (interaction) => {
         );
         if (result && result.newPoints !== null) {
           successCount++;
-          // Optionally log each
           await logAdminAction(
-            interaction.user.id,
+            user.id,
             memberId,
             "addpoints_role",
             pointsToAdd,
@@ -412,18 +382,19 @@ client.on("interactionCreate", async (interaction) => {
         }
       }
 
-      await interaction.reply({
-        content: `✅ **${successCount}** members updated, **${failCount}** failed or not verified, in role <@&${targetRole.id}>.`,
+      return interaction.reply({
+        content: `✅ **${successCount}** members updated, **${failCount}** failed/not verified, in role <@&${targetRole.id}>.`,
         ephemeral: true,
       });
     }
   }
-  // ---- /leaderboard (public) ----
+
+  // ---- /leaderboard => top 10 gold_points
   else if (commandName === "leaderboard") {
     const { data, error } = await supabase
       .from("users")
-      .select("discord_id, points")
-      .order("points", { ascending: false })
+      .select("discord_id, gold_points")
+      .order("gold_points", { ascending: false })
       .limit(10);
 
     if (error) {
@@ -431,7 +402,10 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     const leaderboard = data
-      .map((u, i) => `${i + 1}. <@${u.discord_id}> - **${u.points} points**`)
+      .map(
+        (u, i) =>
+          `${i + 1}. <@${u.discord_id}> - **${u.gold_points}** gold points`,
+      )
       .join("\n");
 
     const embed = new EmbedBuilder()
@@ -442,7 +416,7 @@ client.on("interactionCreate", async (interaction) => {
     return interaction.reply({ embeds: [embed] });
   }
 
-  // ---- /resetpoints (admin) ----
+  // ---- /resetpoints => set gold_points = 0
   else if (commandName === "resetpoints") {
     if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return interaction.reply({
@@ -452,10 +426,9 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     const targetId = options.getString("discord_id");
-    // fetch old points
     const { data: oldData, error: oldErr } = await supabase
       .from("users")
-      .select("points")
+      .select("gold_points")
       .eq("discord_id", targetId)
       .single();
 
@@ -466,11 +439,11 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    const oldPoints = oldData.points;
+    const oldPoints = oldData.gold_points;
 
     const { error: updErr } = await supabase
       .from("users")
-      .update({ points: 0 })
+      .update({ gold_points: 0 })
       .eq("discord_id", targetId);
 
     if (updErr) {
@@ -483,31 +456,31 @@ client.on("interactionCreate", async (interaction) => {
     await logAdminAction(user.id, targetId, "resetpoints", -oldPoints);
 
     return interaction.reply({
-      content: `✅ Reset points for <@${targetId}>.`,
+      content: `✅ Reset gold points for <@${targetId}>.`,
       ephemeral: true,
     });
   }
 
-  // ---- /scorehelp ----
+  // ---- /scorehelp => same as before
   else if (commandName === "scorehelp") {
     const helpMsg = `
 **Scoring Rules:**
 • **Messages**: 1 point per 5 messages, up to 20 pts/day
 • **Reactions (Announcements)**: ${SCORE_CONFIG.reactionPoints} points
 • **Connect Wallet**: ${SCORE_CONFIG.connectWalletPoints} points
-• **Like (X)**: ${SCORE_CONFIG.likePoints} points
-• **Retweet (X)**: ${SCORE_CONFIG.retweetPoints} points
-• **Quote Retweet (X)**: ${SCORE_CONFIG.quoteRetweetPoints} points
-• **Reply (X)**: ${SCORE_CONFIG.replyPoints} points
+• **Like**: ${SCORE_CONFIG.likePoints} points
+• **Retweet**: ${SCORE_CONFIG.retweetPoints} points
+• **Quote Retweet**: ${SCORE_CONFIG.quoteRetweetPoints} points
+• **Reply**: ${SCORE_CONFIG.replyPoints} points
 `;
     return interaction.reply({ content: helpMsg, ephemeral: true });
   }
 
-  // ---- /editscores (admin/mod) ----
+  // ---- /editscores => update the in-memory config
   else if (commandName === "editscores") {
     if (!member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
       return interaction.reply({
-        content: "🚫 Only admins or mods.",
+        content: "🚫 Only admins or mods can use this command.",
         ephemeral: true,
       });
     }
@@ -521,7 +494,6 @@ client.on("interactionCreate", async (interaction) => {
         ephemeral: true,
       });
     }
-
     SCORE_CONFIG[key] = value;
     await logAdminAction(user.id, "N/A", `editscores_${key}`, value);
 
@@ -531,7 +503,7 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
-  // ---- /setreactionchannel (admin/mod) ----
+  // ---- /setreactionchannel => store in DB
   else if (commandName === "setreactionchannel") {
     if (!member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
       return interaction.reply({
@@ -559,7 +531,7 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
-  // ---- /removereactionchannel (admin/mod) ----
+  // ---- /removereactionchannel => remove from DB
   else if (commandName === "removereactionchannel") {
     if (!member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
       return interaction.reply({
@@ -587,7 +559,7 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
-  // ---- /setbotlogchannel (admin/mod) ----
+  // ---- /setbotlogchannel => for logging
   else if (commandName === "setbotlogchannel") {
     if (!member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
       return interaction.reply({
@@ -609,7 +581,7 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
-  // ---- /tweeterupdates (admin/mod) ----
+  // ---- /tweeterupdates => channel for new tweets
   else if (commandName === "tweeterupdates") {
     if (!member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
       return interaction.reply({
@@ -631,9 +603,8 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
-  // ---- /notifytoggle (user) ----
+  // ---- /notifytoggle => user toggles notify_enabled
   else if (commandName === "notifytoggle") {
-    // Toggle whether they receive "You earned X points" messages
     const { data, error: fetchErr } = await supabase
       .from("users")
       .select("notify_enabled")
@@ -642,7 +613,7 @@ client.on("interactionCreate", async (interaction) => {
 
     if (fetchErr || !data) {
       return interaction.reply({
-        content: "❌ Could not find user. Try /verify first.",
+        content: "❌ Could not find your user record. Try /verify first.",
         ephemeral: true,
       });
     }
@@ -667,40 +638,36 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
-  // ---- /adminhelp (admin) ----
+  // ---- /adminhelp => same as before
   else if (commandName === "adminhelp") {
     if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-      return interaction.reply({
-        content: "🚫 Admin only.",
-        ephemeral: true,
-      });
+      return interaction.reply({ content: "🚫 Admin only.", ephemeral: true });
     }
     const desc = `
 **/resetpoints** \`<discord_id>\`
-• Resets a user's points to 0.
+• Sets user's gold_points to 0
 
 **/editscores** \`<key> <value>\`
-• Adjust scoring config (messages, reactions, etc.)
+• Change the scoring config
 
 **/setbotlogchannel** \`<channel>\`
-• Where bot logs are posted.
+• Where bot logs go
 
 **/tweeterupdates** \`<channel>\`
-• Where new tweets get announced.
+• Where new tweets get announced
 
 **/setreactionchannel** \`<channel>\`
-• Adds a channel awarding reaction points.
+• Channel awarding reaction points
 
 **/removereactionchannel** \`<channel>\`
-• Removes channel from awarding reaction points.
+• Remove a channel from awarding reaction points
 
-**/connectwallet** \`<wallet_address>\` (user command, though admin can see usage)
-• Once user links SOL wallet, they get 10 points.
+**/connectwallet** \`<wallet_address>\`
+• Once user links wallet, they get 10 points
 
 **/adminhelp**
-• This help menu.
-
-(Admin permission required)`;
+• This help menu
+    `;
 
     const embed = new EmbedBuilder()
       .setTitle("Admin Commands Help")
@@ -709,7 +676,8 @@ client.on("interactionCreate", async (interaction) => {
 
     return interaction.reply({ embeds: [embed], ephemeral: true });
   }
-  //Fetch Twitter
+
+  // ---- /fetchtwitter => admin-only immediate poll of Twitter
   else if (commandName === "fetchtwitter") {
     if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return interaction.reply({
@@ -718,29 +686,22 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    // Immediately tell Discord we're working (avoids 'Unknown interaction')
     await interaction.deferReply({ ephemeral: true });
-
     try {
-      // Potentially time-consuming
-      await checkTwitterActivity();
-
-      // Now we can safely edit the original deferred reply
+      await checkTwitterActivity(); // The function that polls & awards points
       await interaction.editReply({
-        content:
-          "✅ Fetched recent tweets from X (Twitter). Check the bot logs!",
+        content: "✅ Fetched recent tweets. Check bot logs!",
       });
     } catch (err) {
       console.error("[fetchtwitter] Error:", err);
       await interaction.editReply({
-        content: `❌ Error fetching Twitter data: ${err.message}`,
+        content: `❌ Error fetching data: ${err.message}`,
       });
     }
   }
 
-  // ---- /connectwallet (User) ----
+  // ---- /connectwallet => user can link a wallet for 10 points
   else if (commandName === "connectwallet") {
-    // Let's assume user can only do it once for points
     const walletAddr = options.getString("wallet_address");
     if (!walletAddr) {
       return interaction.reply({
@@ -748,34 +709,34 @@ client.on("interactionCreate", async (interaction) => {
         ephemeral: true,
       });
     }
-    // Check if user already has a sol_wallet
+
+    // Check if user row exists
     const { data: userRec, error: fetchErr } = await supabase
       .from("users")
-      .select("sol_wallet, points, twitter_id, notify_enabled")
+      .select("sol_wallet, gold_points, twitter_id, notify_enabled")
       .eq("discord_id", user.id)
       .single();
 
     if (fetchErr || !userRec) {
-      // If no record, upsert with new wallet
-      // but we also need them verified for awarding points
+      // If no record, upsert
       await supabase
         .from("users")
         .upsert([{ discord_id: user.id, sol_wallet: walletAddr }]);
-      // awarding the 10 points only if they have a twitter_id
-      // let's fetch again:
+      // Re-check to see if they have twitter_id
       const { data: newUserRec } = await supabase
         .from("users")
-        .select("twitter_id, notify_enabled, points")
+        .select("twitter_id, notify_enabled, gold_points")
         .eq("discord_id", user.id)
         .single();
-      if (!newUserRec.twitter_id) {
+
+      if (!newUserRec || !newUserRec.twitter_id) {
         return interaction.reply({
           content:
-            "Wallet connected, but you must /verify (link X) to earn points.",
+            "Wallet connected. Please /verify (link Twitter) to earn points.",
           ephemeral: true,
         });
       }
-      // Award points
+      // Award connectWalletPoints
       const result = await awardPoints(
         user.id,
         SCORE_CONFIG.connectWalletPoints,
@@ -783,25 +744,24 @@ client.on("interactionCreate", async (interaction) => {
       );
       if (result.newPoints === null) {
         return interaction.reply({
-          content: "Wallet connected, but no points. (Check if verified?)",
+          content: "Wallet connected, but no points. Possibly not verified?",
           ephemeral: true,
         });
       }
       if (result.notifyEnabled) {
         botLog(
-          `[connectwallet] ${user.tag} got ${SCORE_CONFIG.connectWalletPoints} points (now ${result.newPoints}).`,
+          `[connectwallet] ${user.tag} +${SCORE_CONFIG.connectWalletPoints} (now ${result.newPoints}).`,
         );
       }
       return interaction.reply({
-        content: `✅ Wallet connected! +${SCORE_CONFIG.connectWalletPoints} points awarded.`,
+        content: `✅ Wallet connected! +${SCORE_CONFIG.connectWalletPoints} gold points.`,
         ephemeral: true,
       });
     } else {
-      // We have a record
+      // We have an existing record
       if (userRec.sol_wallet) {
         return interaction.reply({
-          content:
-            "❌ You already have a wallet connected. No additional points.",
+          content: "❌ You already have a wallet connected.",
           ephemeral: true,
         });
       } else {
@@ -810,13 +770,13 @@ client.on("interactionCreate", async (interaction) => {
           .from("users")
           .update({ sol_wallet: walletAddr })
           .eq("discord_id", user.id);
+
         if (!userRec.twitter_id) {
           return interaction.reply({
             content: "Wallet connected, but you must /verify to earn points.",
             ephemeral: true,
           });
         }
-        // Award points
         const result = await awardPoints(
           user.id,
           SCORE_CONFIG.connectWalletPoints,
@@ -824,17 +784,18 @@ client.on("interactionCreate", async (interaction) => {
         );
         if (result.newPoints === null) {
           return interaction.reply({
-            content: "Wallet connected, but no points. (Check if verified?)",
+            content:
+              "Wallet connected, but no points awarded. Possibly not verified?",
             ephemeral: true,
           });
         }
         if (result.notifyEnabled) {
           botLog(
-            `[connectwallet] ${user.tag} got ${SCORE_CONFIG.connectWalletPoints} points (now ${result.newPoints}).`,
+            `[connectwallet] ${user.tag} +${SCORE_CONFIG.connectWalletPoints} (total: ${result.newPoints}).`,
           );
         }
         return interaction.reply({
-          content: `✅ Wallet connected! +${SCORE_CONFIG.connectWalletPoints} points.`,
+          content: `✅ Wallet connected! +${SCORE_CONFIG.connectWalletPoints} gold points.`,
           ephemeral: true,
         });
       }
@@ -846,13 +807,13 @@ client.on("interactionCreate", async (interaction) => {
  *                      MESSAGE HANDLER
  ********************************************************************/
 /**
- * We do 1 point per 5 messages, up to 20 points per day.
+ * 1 point per 5 messages, up to 20 points / day
  */
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
   const userId = message.author.id;
-  const today = new Date().toISOString().split("T")[0]; // "YYYY-MM-DD"
+  const today = new Date().toISOString().split("T")[0];
 
   if (!dailyMessageTracker[userId]) {
     dailyMessageTracker[userId] = {
@@ -861,7 +822,6 @@ client.on("messageCreate", async (message) => {
       pointsEarnedToday: 0,
     };
   } else {
-    // If date changed, reset
     if (dailyMessageTracker[userId].date !== today) {
       dailyMessageTracker[userId] = {
         date: today,
@@ -873,32 +833,33 @@ client.on("messageCreate", async (message) => {
 
   dailyMessageTracker[userId].messagesSoFar += 1;
 
-  // Check if they've already hit 20 points for the day
+  // If they've already reached 20 points from messages, stop
   if (
     dailyMessageTracker[userId].pointsEarnedToday >=
     SCORE_CONFIG.messageMaxPointsPerDay
   ) {
-    // They can't earn more from messages
     return;
   }
 
-  // If they've reached multiples of 5 messages
+  // If they hit multiples of 5
+  // If they've reached multiples of SCORE_CONFIG.messagesPerPoint
   if (
     dailyMessageTracker[userId].messagesSoFar %
       SCORE_CONFIG.messagesPerPoint ===
     0
   ) {
-    // Award 1 point
-    const potentialPoints = 1;
+    // Use the config's "messageReward" points each time
+    const potentialPoints = SCORE_CONFIG.messageReward;
+
     // But don't exceed daily max
     const canStillEarn =
       SCORE_CONFIG.messageMaxPointsPerDay -
       dailyMessageTracker[userId].pointsEarnedToday;
+
     const pointsToAward = Math.min(potentialPoints, canStillEarn);
 
     if (pointsToAward <= 0) return;
 
-    // Now we do the awarding
     const result = await awardPoints(userId, pointsToAward, "message_points");
     dailyMessageTracker[userId].pointsEarnedToday += pointsToAward;
 
@@ -912,7 +873,7 @@ client.on("messageCreate", async (message) => {
         `[messageCreate] ${message.author.tag} +${pointsToAward} (total: ${result.newPoints}).`,
       );
       message.reply(
-        `🎉 You earned **${pointsToAward} point**! You've now earned **${dailyMessageTracker[userId].pointsEarnedToday}** message pts today.`,
+        `🎉 You earned **${pointsToAward}** point(s)! You've now earned **${dailyMessageTracker[userId].pointsEarnedToday}** message pts today.`,
       );
     }
   }
@@ -922,16 +883,11 @@ client.on("messageCreate", async (message) => {
  *                     REACTION HANDLER
  ********************************************************************/
 /**
- * If reaction is in a "reaction channel" (like an announcements channel),
- * award 2 points.
+ * If user reacts in an allowed channel => +2 gold points
  */
 client.on("messageReactionAdd", async (reaction, user) => {
   if (user.bot) return;
-
-  // Only award points if channel is in REACTION_CHANNELS
-  if (!REACTION_CHANNELS.includes(reaction.message.channelId)) {
-    return;
-  }
+  if (!REACTION_CHANNELS.includes(reaction.message.channelId)) return;
 
   const result = await awardPoints(
     user.id,
@@ -947,8 +903,7 @@ client.on("messageReactionAdd", async (reaction, user) => {
     botLog(
       `[messageReactionAdd] ${user.tag} +${SCORE_CONFIG.reactionPoints} (total: ${result.newPoints}).`,
     );
-    // Typically we don't reply for a reaction, but you could do so if you want
-    // reaction.message.reply(...)
+    // we typically don't reply to a reaction, but you could
   }
 });
 
@@ -958,24 +913,24 @@ client.on("messageReactionAdd", async (reaction, user) => {
 async function checkTwitterActivity() {
   botLog("[checkTwitterActivity] Polling Twitter for new tweets...");
 
-  // 1. Get official account user ID
+  // 1. get official user ID
   let account;
   try {
     account = await twitterClient.v2.userByUsername(OFFICIAL_TWITTER_ACCOUNT);
   } catch (err) {
     botLog(
-      `[checkTwitterActivity] Could not fetch user @${OFFICIAL_TWITTER_ACCOUNT}. Error: ${err}`,
+      `[checkTwitterActivity] Could not fetch @${OFFICIAL_TWITTER_ACCOUNT}: ${err}`,
     );
     return;
   }
   if (!account?.data?.id) {
     botLog(
-      `[checkTwitterActivity] No valid user ID for ${OFFICIAL_TWITTER_ACCOUNT}.`,
+      `[checkTwitterActivity] No valid user ID for @${OFFICIAL_TWITTER_ACCOUNT}.`,
     );
     return;
   }
 
-  // 2. Fetch timeline (recent 5 tweets)
+  // 2. fetch timeline
   let timeline;
   try {
     timeline = await twitterClient.v2.userTimeline(account.data.id, {
@@ -993,13 +948,10 @@ async function checkTwitterActivity() {
   }
 
   const tweets = timeline.data.data;
-
-  // 3. For each tweet, see if we've processed it, if not => post & check engagement
   for (const tw of tweets) {
     const processed = await hasProcessedTweet(tw.id);
     if (!processed) {
       await markTweetAsProcessed(tw.id);
-
       if (TWEET_UPDATES_CHANNEL) {
         try {
           const updatesChan = await client.channels.fetch(
@@ -1016,12 +968,12 @@ async function checkTwitterActivity() {
       }
     }
 
-    // Attempt awarding points for likes, retweets, etc.
+    // Attempt awarding points for likes/retweets
     await awardTweetEngagementPoints(tw.id);
   }
 }
 
-// Helper: hasProcessedTweet & markTweetAsProcessed
+// Check if tweet is processed
 async function hasProcessedTweet(tweetId) {
   const { data, error } = await supabase
     .from("processed_tweets")
@@ -1044,13 +996,10 @@ async function markTweetAsProcessed(tweetId) {
 }
 
 /**
- * Checks likes/retweets for the tweet, and tries to see if we can differentiate
- * standard retweets vs. quote retweets, replies, etc.
- * Note: The free Twitter API doesn't easily provide quote-retweet or reply data,
- * so this is mostly placeholder logic.
+ * Check likes/retweets for a tweet, awarding gold_points
+ * if the user is verified in DB.
  */
 async function awardTweetEngagementPoints(tweetId) {
-  // 1. Get all verified users
   const { data: users, error } = await supabase
     .from("users")
     .select("discord_id, twitter_id, notify_enabled");
@@ -1059,14 +1008,10 @@ async function awardTweetEngagementPoints(tweetId) {
     return;
   }
 
-  // 2. Attempt fetching likes & retweets
   let tweetLikes, tweetRetweets;
   try {
     tweetLikes = await twitterClient.v2.tweetLikedBy(tweetId);
     tweetRetweets = await twitterClient.v2.tweetRetweetedBy(tweetId);
-
-    // If you had an endpoint for replies or quote tweets, you'd call them here
-    // e.g. tweetReplies = await ...
   } catch (err) {
     if (String(err).includes("403")) {
       botLog(
@@ -1081,13 +1026,6 @@ async function awardTweetEngagementPoints(tweetId) {
   const likesData = tweetLikes?.data?.data || [];
   const retweetsData = tweetRetweets?.data?.data || [];
 
-  // If you had a way to detect "quote retweet" or "reply," you’d do it here,
-  // but the standard free endpoints won't show that.
-  // We'll assume standard retweets => +7, we can't see if they quoted it.
-  // We'll skip awarding "reply" or "quoteRetweet" in reality.
-  // This is just a placeholder if you had the necessary expansions.
-
-  // 3. For each user, see if they appear in likes or retweets
   for (const u of users) {
     if (!u.twitter_id) continue;
 
@@ -1109,7 +1047,7 @@ async function awardTweetEngagementPoints(tweetId) {
       }
     }
 
-    // Retweeted? (We can't see if it was quote retweet or standard retweet, so awarding retweetPoints)
+    // Retweeted?
     if (retweetsData.some((rt) => rt.id === u.twitter_id)) {
       const result = await awardPoints(
         u.discord_id,
@@ -1126,12 +1064,7 @@ async function awardTweetEngagementPoints(tweetId) {
         );
       }
     }
-
-    // If you had an API method to detect "reply" or "quote retweet", do similar logic:
-    // if (somehowDetectedReply(u.twitter_id, tweetId)) {
-    //   awardPoints(u.discord_id, SCORE_CONFIG.replyPoints, "twitter_reply");
-    // }
-    // if (somehowDetectedQuoteRetweet) { ... etc }
+    // If you had a way to detect "reply" or "quote retweet," you'd do so here
   }
 }
 
@@ -1141,7 +1074,7 @@ async function awardTweetEngagementPoints(tweetId) {
 client.login(process.env.DISCORD_TOKEN).then(async () => {
   console.log("[Bot] Bot logged in successfully.");
 
-  // Load reaction channels from DB
+  // Load reaction channels
   await loadReactionChannels();
 
   // Poll Twitter every 15 minutes
